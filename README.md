@@ -1,19 +1,26 @@
-# Telegram SMM Bot
+# Telegram SMM Bot — Render Ready
 
-## 1. Install Node.js
-Node.js 18+ recommended.
+Render:
+- Service: Web Service
+- Plan: Free
+- Build Command: `npm install`
+- Start Command: `npm start`
+- Health Check: `/health` (optional)
 
-## 2. Install packages
-npm install
+Environment Variables:
+- `BOT_TOKEN`
+- `SMM_API_URL` = `https://my.smmsun.com/api/v2`
+- `SMM_API_KEY`
+- `ADMIN_ID`
 
-## 3. Create .env
-Copy `.env.example` to `.env` and fill:
-- BOT_TOKEN: BotFather token
-- SMM_API_URL: https://my.smmsun.com/api/v2
-- SMM_API_KEY: your provider API key
-- ADMIN_ID: your Telegram numeric ID
+Render automatically provides `RENDER_EXTERNAL_URL` for a Web Service, and the bot uses it to configure Telegram webhook.
 
-## 4. Start
-npm start
+Included now:
+- `/start`
+- Services from SMM provider API
+- Provider balance
+- New Order placeholder
+- My Orders placeholder
 
-Never share BOT_TOKEN or SMM_API_KEY publicly.
+Customer balance, payment, order database and admin price controls are not yet included.
+Never upload real `.env`, bot token or API key to GitHub.
