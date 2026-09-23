@@ -1,42 +1,32 @@
-# Trusted BAZAAR Telegram SMM Bot — Customer + Admin
+# Trusted BAZAAR Telegram SMM Bot — Customer Balance + SMM Orders
 
-## Default Service IDs
-979, 133, 174, 3758, 1753, 622, 893, 2194, 1850, 1722, 9445
+## Included
+- Customer Services list from SMM provider API.
+- Customer wallet/balance stored in PostgreSQL JSON data.
+- Add Balance flow: payment number -> amount -> TxID -> pending request.
+- Admin Payment Requests with Approve/Reject buttons.
+- Admin can add, remove, set, increase and decrease service prices.
+- Admin can add/remove payment numbers and replace the current payment number.
+- Admin can add any numeric SMM Service ID.
+- Customer New Order: Service -> Link -> Quantity -> balance check -> SMM API `action=add` -> deduct balance only after provider accepts the order.
+- My Orders shows local order, cost, status and provider order ID.
+- PostgreSQL persistence.
+- Render webhook support.
 
-Only these IDs are shown to customers initially.
+## Environment variables
+Required:
+- BOT_TOKEN
+- SMM_API_KEY
+- ADMIN_ID
+- DATABASE_URL
 
-## Admin
-Set `ADMIN_ID` to the numeric Telegram user ID of the owner.
+Optional:
+- SMM_API_URL=https://my.smmsun.com/api/v2
+- PORT=10000
+- RENDER_EXTERNAL_URL=<your Render public URL>
 
-Use `/admin` in Telegram.
+## Price behavior
+Prices are stored as BDT per 1,000 units. If no custom price exists, the provider's `rate` is used. Increase/decrease uses the current custom price; if none exists it starts from the provider rate.
 
-Admin can:
-- Add Service IDs
-- Remove Service IDs
-- Set a service price
-- Increase a service price
-- Decrease a service price
-- View selected services
-- Add/remove payment numbers
-- View user count
-
-## Customer
-Customer sees only selected Service IDs.
-
-Prices saved by admin are shown to customers instead of provider rate.
-
-## Render
-Build: `npm install`
-Start: `npm start`
-Plan: Free Web Service
-
-Environment:
-BOT_TOKEN
-SMM_API_URL=https://my.smmsun.com/api/v2
-SMM_API_KEY
-ADMIN_ID
-
-## Important
-This version stores settings in `data/settings.json`. Render Free Web Services do not provide persistent disk storage, so settings can be lost after a service replacement/redeploy/restart. For a real production bot, use a database (PostgreSQL/Redis/etc.).
-
-Payment numbers in this version are only displayed/stored. Automatic payment verification and customer wallet/order processing are not implemented yet.
+## Important payment note
+The bot does not automatically verify a bank/mobile-wallet transaction. Customer payment requests are marked pending until an admin reviews the submitted amount and TxID and presses Approve or Reject.
