@@ -119,7 +119,28 @@ function rememberUser(msg) {
   return saveDb();
 }
 function normalizeButton(text) {
-  return String(text || "").normalize("NFKC").replace(/\uFE0F/g, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim().toLowerCase();
+  const raw = String(text || "").normalize("NFKC").replace(/\uFE0F/g, "").trim();
+  const clean = raw.replace(/[^\p{L}\p{N}]+/gu, " ").trim().toLowerCase();
+  const aliases = {
+    "📋 services": "services", "services": "services",
+    "💰 balance": "balance", "balance": "balance",
+    "💳 add balance": "add balance", "add balance": "add balance",
+    "🛒 new order": "new order", "new order": "new order",
+    "📦 my orders": "my orders", "my orders": "my orders",
+    "⚙️ admin panel": "admin panel", "admin panel": "admin panel",
+    "📋 manage services": "manage services", "manage services": "manage services",
+    "➕ add service id": "add service id", "add service id": "add service id",
+    "➖ remove service id": "remove service id", "remove service id": "remove service id",
+    "💰 set price": "set price", "set price": "set price",
+    "⬆️ increase price": "increase price", "increase price": "increase price",
+    "⬇️ decrease price": "decrease price", "decrease price": "decrease price",
+    "💳 payment numbers": "payment numbers", "payment numbers": "payment numbers",
+    "✏️ change payment number": "change payment number", "change payment number": "change payment number",
+    "💳 payment requests": "payment requests", "payment requests": "payment requests",
+    "👥 user count": "user count", "user count": "user count",
+    "🔙 customer menu": "customer menu", "customer menu": "customer menu"
+  };
+  return aliases[raw.toLowerCase()] || aliases[clean] || clean;
 }
 
 function selectedServiceInfo(all, serviceId) {
@@ -159,7 +180,11 @@ async function manageServices(chatId) {
 
 async function showPaymentNumbers(chatId) {
   const nums = db.paymentNumbers.length ? db.paymentNumbers.map((n, i) => `${i + 1}. ${n}`).join("\n") : "কোনো payment number যোগ করা হয়নি।";
-  return bot.sendMessage(chatId, `💳 Payment Numbers\n\n${nums}\n\nনতুন number: /addpayment\nnumber বাদ: /removepayment`, { reply_markup: adminKeyboard() });
+  return bot.sendMessage(chatId, `💳 Payment Numbers\n\n${nums}`, { reply_markup: { inline_keyboard: [
+    [{ text: "➕ Add Number", callback_data: "admin_pay_add" }, { text: "✏️ Change Number", callback_data: "admin_pay_change" }],
+    [{ text: "🗑️ Remove Number", callback_data: "admin_pay_remove" }],
+    [{ text: "🔙 Admin Panel", callback_data: "admin_panel" }]
+  ] } });
 }
 
 async function showPaymentRequests(chatId) {
@@ -237,6 +262,27 @@ bot.on("callback_query", async q => {
       setState(uid, { type: "order_link", serviceId: sid, service: s });
       return bot.sendMessage(chatId, `📌 ${s.name}\n💰 Price: ৳${money(s.price)}/1K\n🔢 Min: ${s.min || "-"} | Max: ${s.max || "-"}\n\n🔗 এখন আপনার Link/Username পাঠান:`);
     }
+    if (data === "admin_panel") {
+      if (!isAdmin(uid)) return;
+      clearState(uid);
+      return bot.sendMessage(chatId, "⚙️ Admin Panel", { reply_markup: adminKeyboard() });
+    }
+    if (data === "admin_pay_add") {
+      if (!isAdmin(uid)) return;
+      setState(uid, { type: "payment_add" });
+      return bot.sendMessage(chatId, "➕ নতুন payment number লিখুন।");
+    }
+    if (data === "admin_pay_change") {
+      if (!isAdmin(uid)) return;
+      setState(uid, { type: "payment_change" });
+      return bot.sendMessage(chatId, "✏️ নতুন payment number দিন। এটি বর্তমান payment number replace করবে।");
+    }
+    if (data === "admin_pay_remove") {
+      if (!isAdmin(uid)) return;
+      if (!db.paymentNumbers.length) return bot.sendMessage(chatId, "⚠️ কোনো payment number নেই।");
+      setState(uid, { type: "payment_remove" });
+      return bot.sendMessage(chatId, `🗑️ যে payment number মুছবেন সেটি হুবহু পাঠান:\n\n${db.paymentNumbers.join("\n")}`);
+    }
     if (data.startsWith("dep_approve:") || data.startsWith("dep_reject:")) {
       if (!isAdmin(uid)) return;
       const [action, depId] = data.split(":"); const d = db.deposits[depId];
@@ -259,6 +305,7 @@ bot.on("callback_query", async q => {
 bot.on("message", async msg => {
   try {
     if (!msg.text || msg.text.startsWith("/")) return;
+    if (msg.chat.type !== "private") return;
     const id = msg.chat.id, uid = msg.from.id, text = msg.text, action = normalizeButton(text);
     await rememberUser(msg);
 
@@ -267,11 +314,12 @@ bot.on("message", async msg => {
       if (adminResult !== undefined) return;
     }
 
-    if (action === "services") return sendCustomerServices(id);
-    if (action === "balance") return bot.sendMessage(id, `💰 Your Balance\n\n৳${money(getBalance(uid))}`, { reply_markup: customerKeyboard(uid) });
+    if (action === "services") { clearState(uid); return sendCustomerServices(id); }
+    if (action === "balance") { clearState(uid); return bot.sendMessage(id, `💰 Your Balance\n\n৳${money(getBalance(uid))}`, { reply_markup: customerKeyboard(uid) }); }
     if (action === "add balance") { clearState(uid); return showAddBalance(id); }
     if (action === "new order") { clearState(uid); return startNewOrder(id, uid); }
     if (action === "my orders") {
+      clearState(uid);
       const orders = Object.values(db.orders).filter(o => String(o.userId) === String(uid));
       if (!orders.length) return bot.sendMessage(id, "📦 My Orders\n\nআপনার কোনো order পাওয়া যায়নি।", { reply_markup: customerKeyboard(uid) });
       const lines = orders.slice(-20).reverse().map(o => `🆔 ${o.id}\n📌 Service: ${o.serviceId}\n🔗 ${o.link}\n🔢 Qty: ${o.quantity}\n💵 Cost: ৳${money(o.cost)}\n📊 Status: ${o.status || "Pending"}${o.providerOrderId ? `\n🔢 Provider Order: ${o.providerOrderId}` : ""}`);
@@ -385,7 +433,7 @@ bot.onText(/^\/removepayment$/i, async msg => {
 
 const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/") { res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" }); return res.end("Trusted BAZAAR Telegram SMM Bot is running."); }
-  if (req.method === "GET" && req.url === "/health") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: true, database: Boolean(pool) })); }
+  if (req.method === "GET" && req.url === "/health") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ ok: true, database: Boolean(pool), webhookPath, adminConfigured: Boolean(ADMIN_ID), apiConfigured: Boolean(SMM_API_KEY) })); }
   if (req.method === "POST" && req.url === webhookPath) {
     let raw = ""; req.on("data", chunk => { raw += chunk; if (raw.length > 2 * 1024 * 1024) req.destroy(); });
     req.on("end", async () => { try { await bot.processUpdate(JSON.parse(raw || "{}")); } catch (e) { console.error("Webhook error:", e.stack || e.message); } res.writeHead(200); res.end("OK"); }); return;
