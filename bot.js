@@ -16,7 +16,7 @@ const PORT = Number(process.env.PORT) || 10000;
 if (!BOT_TOKEN) throw new Error("BOT_TOKEN is missing.");
 if (!SMM_API_KEY) console.warn("WARNING: SMM_API_KEY is missing.");
 if (!ADMIN_ID) console.warn("WARNING: ADMIN_ID is missing.");
-if (!DATABASE_URL) console.warn("WARNING: DATABASE_URL is missing. Persistent database is unavailable.");
+if (!DATABASE_URL) throw new Error("DATABASE_URL is required. Refusing to start with temporary in-memory storage, because customer/admin data must survive redeploys.");
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 const webhookSecret = crypto.createHash("sha256").update(BOT_TOKEN).digest("hex").slice(0, 40);
@@ -45,9 +45,14 @@ async function initDb() {
   if (!pool) return;
   await pool.query(`CREATE TABLE IF NOT EXISTS bot_settings (id INTEGER PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
   const result = await pool.query("SELECT data FROM bot_settings WHERE id = 1");
-  if (result.rows[0]?.data) db = { ...defaultDb(), ...result.rows[0].data };
-  else await saveDb();
-  normalizeDb();
+  if (result.rows[0]?.data) {
+    const saved = result.rows[0].data || {};
+    db = { ...defaultDb(), ...saved, referral: { ...defaultDb().referral, ...(saved.referral || {}) } };
+    normalizeDb();
+  } else {
+    normalizeDb();
+    await saveDb();
+  }
 }
 
 function normalizeDb() {
@@ -71,7 +76,7 @@ function saveDb() {
   const snapshot = JSON.parse(JSON.stringify(db));
   saveQueue = saveQueue.then(async () => {
     await pool.query(`INSERT INTO bot_settings (id, data, updated_at) VALUES (1, $1::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`, [JSON.stringify(snapshot)]);
-  }).catch(err => console.error("Database save error:", err.message));
+  }).catch(err => { console.error("Database save error:", err.stack || err.message); throw err; });
   return saveQueue;
 }
 
@@ -215,7 +220,14 @@ function clearState(id) { states.delete(String(id)); }
 
 function rememberUser(msg) {
   const id = String(msg.from.id);
-  db.users[id] = { id: msg.from.id, username: msg.from.username || "", firstName: msg.from.first_name || "", lastSeen: new Date().toISOString() };
+  const previous = db.users[id] || {};
+  db.users[id] = {
+    ...previous,
+    id: msg.from.id,
+    username: msg.from.username || previous.username || "",
+    firstName: msg.from.first_name || previous.firstName || "",
+    lastSeen: new Date().toISOString()
+  };
   return saveDb();
 }
 function normalizeButton(text) {
