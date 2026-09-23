@@ -28,6 +28,7 @@ const defaultDb = () => ({
   serviceIds: [...DEFAULT_SERVICE_IDS],
   prices: {},
   paymentNumbers: [],
+  paymentMethods: { "বিকাশ": "", "নগদ": "", "বাইন্সাস": "" },
   users: {},
   orders: {},
   balances: {},
@@ -60,6 +61,11 @@ function normalizeDb() {
   db.serviceIds = db.serviceIds.map(String);
   if (!db.prices || typeof db.prices !== "object") db.prices = {};
   if (!Array.isArray(db.paymentNumbers)) db.paymentNumbers = [];
+  if (!db.paymentMethods || typeof db.paymentMethods !== "object") db.paymentMethods = { "বিকাশ": "", "নগদ": "", "বাইন্সাস": "" };
+  for (const method of ["বিকাশ", "নগদ", "বাইন্সাস"]) if (typeof db.paymentMethods[method] !== "string") db.paymentMethods[method] = "";
+  // Migrate old single/list payment numbers into bKash if needed.
+  if (!db.paymentMethods["বিকাশ"] && db.paymentNumbers.length) db.paymentMethods["বিকাশ"] = db.paymentNumbers[0];
+  db.paymentNumbers = Object.values(db.paymentMethods).filter(Boolean);
   if (!db.users || typeof db.users !== "object") db.users = {};
   if (!db.orders || typeof db.orders !== "object") db.orders = {};
   if (!db.balances || typeof db.balances !== "object") db.balances = {};
@@ -207,8 +213,8 @@ function adminKeyboard() {
     [{ text: "📋 Manage Services" }],
     [{ text: "➕ Add Service ID" }, { text: "➖ Remove Service ID" }],
     [{ text: "💰 Set Price" }, { text: "⬆️ Increase Price" }],
-    [{ text: "⬇️ Decrease Price" }, { text: "💳 Payment Numbers" }],
-    [{ text: "✏️ Change Payment Number" }, { text: "💳 Payment Requests" }],
+    [{ text: "⬇️ Decrease Price" }, { text: "💳 Payment Methods" }],
+    [{ text: "💳 Payment Requests" }],
     [{ text: "👥 User Count" }],
     [{ text: "👤 Customer Details" }],
     [{ text: "🔙 Customer Menu" }]
@@ -250,6 +256,7 @@ function normalizeButton(text) {
     'increase price': 'increase price',
     'decrease price': 'decrease price',
     'payment numbers': 'payment numbers',
+    'payment methods': 'payment numbers',
     'change payment number': 'change payment number',
     'payment requests': 'payment requests',
     'user count': 'user count',
@@ -296,10 +303,12 @@ async function manageServices(chatId) {
 }
 
 async function showPaymentNumbers(chatId) {
-  const nums = db.paymentNumbers.length ? db.paymentNumbers.map((n, i) => `${i + 1}. ${n}`).join("\n") : "কোনো payment number যোগ করা হয়নি।";
-  return bot.sendMessage(chatId, `💳 Payment Numbers\n\n${nums}`, { reply_markup: { inline_keyboard: [
-    [{ text: "➕ Add Number", callback_data: "admin_pay_add" }, { text: "✏️ Change Number", callback_data: "admin_pay_change" }],
-    [{ text: "🗑️ Remove Number", callback_data: "admin_pay_remove" }],
+  const pm = db.paymentMethods || {};
+  const text = `💳 Payment Methods\n\n🟣 বিকাশ: ${pm["বিকাশ"] || "Not set"}\n🟢 নগদ: ${pm["নগদ"] || "Not set"}\n🔵 বাইন্সাস: ${pm["বাইন্সাস"] || "Not set"}`;
+  return bot.sendMessage(chatId, text, { reply_markup: { inline_keyboard: [
+    [{ text: "🟣 Set বিকাশ", callback_data: "admin_pay_method:বিকাশ" }],
+    [{ text: "🟢 Set নগদ", callback_data: "admin_pay_method:নগদ" }],
+    [{ text: "🔵 Set বাইন্সাস", callback_data: "admin_pay_method:বাইন্সাস" }],
     [{ text: "🔙 Admin Panel", callback_data: "admin_panel" }]
   ] } });
 }
@@ -448,17 +457,21 @@ async function startNewOrder(chatId, uid) {
 }
 
 async function showAddBalance(chatId) {
-  if (!db.paymentNumbers.length) return bot.sendMessage(chatId, "⚠️ Admin এখনো কোনো payment number যোগ করেননি।");
-  const nums = db.paymentNumbers.map((n, i) => `${i + 1}. ${n}`).join("\n");
-  setState(chatId, { type: "deposit_amount" });
-  return bot.sendMessage(chatId, `💳 Add Balance\n\nPayment করুন এই number-এ:\n${nums}\n\nএরপর কত টাকা পাঠিয়েছেন শুধু amount লিখুন।\nউদাহরণ: 100`);
+  const pm = db.paymentMethods || {};
+  const buttons = Object.entries(pm).filter(([, number]) => number).map(([method, number]) => [{ text: `${method} • ${number}`, callback_data: `deposit_method:${method}` }]);
+  if (!buttons.length) return bot.sendMessage(chatId, "⚠️ Admin এখনো কোনো payment method সেট করেননি।");
+  clearState(chatId);
+  return bot.sendMessage(chatId, `💳 Add Balance\n\nএকটি Payment Method নির্বাচন করুন:`, { reply_markup: { inline_keyboard: buttons } });
 }
 
 async function submitDeposit(chatId, uid, amount) {
   if (!Number.isFinite(amount) || amount <= 0) return bot.sendMessage(chatId, "⚠️ সঠিক amount দিন। উদাহরণ: 100");
-  if (!db.paymentNumbers.length) return bot.sendMessage(chatId, "⚠️ Payment number সেট করা নেই।");
-  setState(uid, { type: "deposit_txid", amount });
-  return bot.sendMessage(chatId, `💵 Amount: ৳${money(amount)}\n\nএখন আপনার Transaction ID/TrxID পাঠান।\nউদাহরণ: TX123456789`);
+  const state = getState(uid);
+  const method = state?.paymentMethod || "";
+  const number = db.paymentMethods?.[method] || "";
+  if (!method || !number) return bot.sendMessage(chatId, "⚠️ Payment Method নির্বাচন করুন।", { reply_markup: { inline_keyboard: Object.entries(db.paymentMethods || {}).filter(([,n])=>n).map(([m,n])=>[{text:`${m} • ${n}`,callback_data:`deposit_method:${m}`}]) } });
+  setState(uid, { type: "deposit_txid", amount, paymentMethod: method, paymentNumber: number });
+  return bot.sendMessage(chatId, `💵 Amount: ৳${money(amount)}\n💳 Method: ${method}\n📱 Number: ${number}\n\nএখন আপনার Transaction ID/TrxID পাঠান।\nউদাহরণ: TX123456789`);
 }
 
 bot.onText(/^\/start(?:\s+(.+))?$/i, async (msg, match) => {
@@ -484,6 +497,13 @@ bot.on("callback_query", async q => {
       setState(uid, { type: "order_link", serviceId: sid, service: s });
       return bot.sendMessage(chatId, `📌 ${s.name}\n💰 Price: ৳${money(s.price)}/1K\n🔢 Min: ${s.min || "-"} | Max: ${s.max || "-"}\n\n🔗 এখন আপনার Link/Username পাঠান:`);
     }
+    if (data.startsWith("deposit_method:")) {
+      const method = data.split(":").slice(1).join(":");
+      const number = db.paymentMethods?.[method] || "";
+      if (!number) return bot.sendMessage(chatId, "⚠️ এই payment method এখনো সেট করা হয়নি।");
+      setState(uid, { type: "deposit_amount_method", paymentMethod: method, paymentNumber: number });
+      return bot.sendMessage(chatId, `💳 ${method}\n📱 Number: ${number}\n\nকত টাকা পাঠিয়েছেন লিখুন।\nউদাহরণ: 100`);
+    }
     if (data === "admin_panel") {
       if (!isAdmin(uid)) return;
       clearState(uid);
@@ -499,6 +519,12 @@ bot.on("callback_query", async q => {
       const customerId = data.split(":")[1];
       clearState(uid);
       return showCustomerDetails(chatId, customerId);
+    }
+    if (data.startsWith("admin_pay_method:")) {
+      if (!isAdmin(uid)) return;
+      const method = data.split(":").slice(1).join(":");
+      setState(uid, { type: "payment_method_set", method });
+      return bot.sendMessage(chatId, `✏️ ${method}-এর payment number/account number পাঠান।`);
     }
     if (data === "admin_pay_add") {
       if (!isAdmin(uid)) return;
@@ -597,6 +623,9 @@ bot.on('message', async msg => {
     const state = getState(uid);
     console.log(`[STATE] uid=${uid} state=${JSON.stringify(state || null)}`);
 
+    if (state?.type === 'deposit_amount_method') {
+      return await submitDeposit(chatId, uid, Number(text.replace(/,/g, '')));
+    }
     if (state?.type === 'deposit_amount') {
       return await submitDeposit(chatId, uid, Number(text.replace(/,/g, '')));
     }
@@ -604,7 +633,7 @@ bot.on('message', async msg => {
       const txId = text.trim();
       if (txId.length < 3 || txId.length > 100) return await bot.sendMessage(chatId, '⚠️ সঠিক Transaction ID দিন।');
       const depId = `DEP-${Date.now()}-${String(uid).slice(-5)}`;
-      db.deposits[depId] = { id: depId, userId: uid, amount: Number(state.amount), paymentNumber: db.paymentNumbers[0], txId, status: 'pending', createdAt: new Date().toISOString() };
+      db.deposits[depId] = { id: depId, userId: uid, amount: Number(state.amount), paymentMethod: state.paymentMethod || '', paymentNumber: state.paymentNumber || db.paymentMethods?.[state.paymentMethod] || db.paymentNumbers[0], txId, status: 'pending', createdAt: new Date().toISOString() };
       await saveDb(); clearState(uid);
       await bot.sendMessage(chatId, `✅ Payment request পাঠানো হয়েছে।\n🆔 ${depId}\n💵 Amount: ৳${money(state.amount)}\n🔖 TxID: ${txId}\n\nAdmin approve করলে balance যোগ হবে।`, { reply_markup: customerKeyboard(uid) });
       if (ADMIN_ID) await bot.sendMessage(ADMIN_ID, `🔔 নতুন payment request এসেছে।\n🆔 ${depId}\n👤 User: ${uid}\n💵 Amount: ৳${money(state.amount)}\n🔖 TxID: ${txId}`, { reply_markup: { inline_keyboard: [[{ text: '✅ Approve', callback_data: `dep_approve:${depId}` }, { text: '❌ Reject', callback_data: `dep_reject:${depId}` }]] } });
@@ -679,6 +708,15 @@ bot.on('message', async msg => {
         else db.prices[serviceId] = state.type === 'increase_price' ? base + amount : Math.max(0, base - amount);
         await saveDb(); clearState(uid);
         return await bot.sendMessage(chatId, `✅ Service ${serviceId}-এর নতুন দাম/1K: ৳${money(db.prices[serviceId])}`, { reply_markup: adminKeyboard() });
+      }
+      if (state?.type === 'payment_method_set') {
+        const number = text.trim();
+        if (!/^[0-9+\-\s]{8,25}$/.test(number)) return await bot.sendMessage(chatId, '⚠️ সঠিক payment number দিন।');
+        const method = state.method;
+        db.paymentMethods[method] = number;
+        db.paymentNumbers = Object.values(db.paymentMethods).filter(Boolean);
+        await saveDb(); clearState(uid);
+        return await bot.sendMessage(chatId, `✅ ${method} payment number সেট হয়েছে:\n${number}`, { reply_markup: adminKeyboard() });
       }
       if (state?.type === 'payment_change') {
         const number = text.trim();
