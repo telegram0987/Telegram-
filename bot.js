@@ -18,7 +18,7 @@ if (!SMM_API_KEY) console.warn("WARNING: SMM_API_KEY is missing.");
 if (!ADMIN_ID) console.warn("WARNING: ADMIN_ID is missing.");
 if (!DATABASE_URL) console.warn("WARNING: DATABASE_URL is missing. Persistent database is unavailable.");
 
-const bot = new TelegramBot(BOT_TOKEN);
+const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 const webhookSecret = crypto.createHash("sha256").update(BOT_TOKEN).digest("hex").slice(0, 40);
 const webhookPath = `/telegram/webhook/${webhookSecret}`;
 
@@ -479,16 +479,23 @@ async function start() {
     await initDb();
     server.listen(PORT, "0.0.0.0", async () => {
       console.log(`Listening on 0.0.0.0:${PORT}`);
-      if (process.env.RENDER_EXTERNAL_URL) {
-        const base = process.env.RENDER_EXTERNAL_URL.replace(/\/$/, ''), webhookUrl = base + webhookPath;
-        try {
-          await bot.deleteWebHook();
-          await bot.setWebHook(webhookUrl, { drop_pending_updates: false, allowed_updates: ['message', 'callback_query'] });
-          console.log('Telegram webhook configured:', webhookUrl);
-        } catch (e) { console.error('Webhook setup failed:', e.response?.body || e.message); }
-      } else console.warn('RENDER_EXTERNAL_URL is missing; Telegram webhook was not configured.');
+      try {
+        // Use long polling instead of Render webhook. This avoids webhook routing/proxy issues
+        // and makes Telegram updates reach the message/callback handlers directly.
+        await bot.deleteWebHook({ drop_pending_updates: false });
+        await bot.startPolling({
+          restart: true,
+          params: { timeout: 25, allowed_updates: ['message', 'callback_query'] }
+        });
+        console.log('Telegram long polling started successfully.');
+      } catch (e) {
+        console.error('Telegram polling startup failed:', e.response?.body || e.message);
+      }
     });
   } catch (e) { console.error("Startup failed:", e.stack || e.message); process.exit(1); }
 }
-process.on("SIGTERM", async () => { try { await bot.deleteWebHook(); } catch (_) {} try { if (pool) await pool.end(); } catch (_) {} server.close(() => process.exit(0)); });
+bot.on('polling_error', (err) => console.error('Telegram polling error:', err.response?.body || err.message));
+bot.on('error', (err) => console.error('Telegram bot error:', err.message));
+
+process.on("SIGTERM", async () => { try { await bot.stopPolling(); } catch (_) {} try { await bot.deleteWebHook(); } catch (_) {} try { if (pool) await pool.end(); } catch (_) {} server.close(() => process.exit(0)); });
 start();

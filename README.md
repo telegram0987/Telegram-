@@ -11,7 +11,7 @@
 - Customer New Order: Service -> Link -> Quantity -> balance check -> SMM API `action=add` -> deduct balance only after provider accepts the order.
 - My Orders shows local order, cost, status and provider order ID.
 - PostgreSQL persistence.
-- Render webhook support.
+- Render-compatible long polling (no webhook setup required).
 
 ## Environment variables
 Required:
@@ -30,3 +30,7 @@ Prices are stored as BDT per 1,000 units. If no custom price exists, the provide
 
 ## Important payment note
 The bot does not automatically verify a bank/mobile-wallet transaction. Customer payment requests are marked pending until an admin reviews the submitted amount and TxID and presses Approve or Reject.
+
+
+## Deployment note
+This version intentionally uses Telegram long polling. You do not need `RENDER_EXTERNAL_URL` for Telegram updates. Keep Start Command as `node bot.js`.
