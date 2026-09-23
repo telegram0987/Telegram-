@@ -31,7 +31,8 @@ const defaultDb = () => ({
   users: {},
   orders: {},
   balances: {},
-  deposits: {}
+  deposits: {},
+  referral: { minOrder: 50, commissionRate: 0.10 }
 });
 
 let db = defaultDb();
@@ -58,6 +59,9 @@ function normalizeDb() {
   if (!db.orders || typeof db.orders !== "object") db.orders = {};
   if (!db.balances || typeof db.balances !== "object") db.balances = {};
   if (!db.deposits || typeof db.deposits !== "object") db.deposits = {};
+  if (!db.referral || typeof db.referral !== "object") db.referral = { minOrder: 50, commissionRate: 0.10 };
+  if (!Number.isFinite(Number(db.referral.minOrder))) db.referral.minOrder = 50;
+  if (!Number.isFinite(Number(db.referral.commissionRate))) db.referral.commissionRate = 0.10;
 }
 
 let saveQueue = Promise.resolve();
@@ -132,6 +136,32 @@ async function syncOrderStatuses() {
         if (newStatus === 'Completed' && !order.completionNotified) {
           order.completedAt = new Date().toISOString();
           order.completionNotified = true;
+
+          // Referral commission: only after a provider-confirmed Completed order.
+          const buyer = db.users[String(order.userId)] || {};
+          const referrerId = String(buyer.referredBy || '');
+          const minReferralOrder = Number(db.referral?.minOrder || 50);
+          const referralRate = Number(db.referral?.commissionRate || 0.10);
+          const referralCommission = 5;
+          const refUser = db.users[referrerId] || { id: Number(referrerId) };
+          if (!refUser.referralRewardedUsers || typeof refUser.referralRewardedUsers !== 'object') refUser.referralRewardedUsers = {};
+          const alreadyRewarded = Boolean(refUser.referralRewardedUsers[String(order.userId)]);
+          // Fixed ৳5 reward only once for each referred customer, after their first completed order of at least ৳50.
+          if (referrerId && referrerId !== String(order.userId) && Number(order.cost || 0) >= minReferralOrder && !alreadyRewarded && !order.referralCommissionPaid) {
+            setBalance(referrerId, getBalance(referrerId) + referralCommission);
+            refUser.referralEarnings = Number(refUser.referralEarnings || 0) + referralCommission;
+            refUser.referralRewardedUsers[String(order.userId)] = true;
+            db.users[referrerId] = refUser;
+            order.referralCommissionPaid = true;
+            order.referralCommission = referralCommission;
+            order.referralPaidTo = referrerId;
+            try {
+              await bot.sendMessage(referrerId, `🎁 Referral Reward Added!\n\n🆔 Order: ${order.id}\n💵 Customer Order: ৳${money(order.cost)}\n💰 Referral Reward: ৳5.00\n💵 Your Balance: ৳${money(getBalance(referrerId))}`, { reply_markup: customerKeyboard(Number(referrerId)) });
+            } catch (notifyErr) {
+              console.error(`Referral notification failed for ${referrerId}:`, notifyErr.response?.body || notifyErr.message);
+            }
+          }
+
           const customerText = `🎉 Order Completed!\n\n🆔 Order: ${order.id}\n📌 Service: ${order.serviceId}\n🔢 Quantity: ${order.quantity}\n💵 Cost: ৳${money(order.cost)}\n📊 Status: ✅ Completed${order.providerOrderId ? `\n🔢 Provider Order: ${order.providerOrderId}` : ''}`;
           try {
             await bot.sendMessage(String(order.userId), customerText, { reply_markup: customerKeyboard(order.userId) });
@@ -161,7 +191,7 @@ function customerKeyboard(userId) {
   const rows = [
     [{ text: "📋 Services" }, { text: "💰 Balance" }],
     [{ text: "💳 Add Balance" }, { text: "🛒 New Order" }],
-    [{ text: "📦 My Orders" }]
+    [{ text: "📦 My Orders" }, { text: "👥 Referral" }]
   ];
   if (isAdmin(userId)) rows.push([{ text: "⚙️ Admin Panel" }]);
   return { keyboard: rows, resize_keyboard: true, is_persistent: true };
@@ -197,6 +227,7 @@ function normalizeButton(text) {
     'add balance': 'add balance',
     'new order': 'new order',
     'my orders': 'my orders',
+    'referral': 'referral',
     'admin panel': 'admin panel',
     'manage services': 'manage services',
     'add service id': 'add service id',
@@ -281,6 +312,48 @@ async function handleAdminAction(id, uid, action) {
   if (action === "customer menu") { clearState(uid); return bot.sendMessage(id, "🏠 Customer Menu", { reply_markup: customerKeyboard(uid) }); }
 }
 
+
+async function getBotUsername() {
+  const me = await bot.getMe();
+  return String(me.username || "");
+}
+
+function getReferralLink(uid, username) {
+  return `https://t.me/${username}?start=ref_${uid}`;
+}
+
+async function showReferral(chatId, uid) {
+  const user = db.users[String(uid)] || {};
+  let username = user.botUsername;
+  if (!username) {
+    username = await getBotUsername();
+    user.botUsername = username;
+    db.users[String(uid)] = user;
+    await saveDb();
+  }
+  const referred = Object.values(db.users).filter(u => String(u.referredBy || '') === String(uid)).length;
+  const earned = Number(user.referralEarnings || 0);
+  const link = getReferralLink(uid, username);
+  return bot.sendMessage(chatId,
+    `👥 Referral Program\n\n🔗 আপনার Referral Link:\n${link}\n\n👥 Total Referrals: ${referred}\n💰 Total Commission: ৳${money(earned)}\n\n🎁 কোনো নতুন customer আপনার link দিয়ে bot-এ আসবে এবং তার completed order-এর মূল্য কমপক্ষে ৳${money(db.referral.minOrder)} হলে, আপনি ওই customer-এর প্রথম completed ৳50+ order হলে একবারই ৳5 পাবেন।\n\nউদাহরণ: ৳50 বা তার বেশি order → একবার ৳5 reward।`,
+    { reply_markup: customerKeyboard(uid) }
+  );
+}
+
+async function processReferralStart(msg, startArg) {
+  const uid = String(msg.from.id);
+  if (!startArg || !startArg.startsWith('ref_')) return;
+  const referrerId = startArg.slice(4).trim();
+  if (!/^\d+$/.test(referrerId) || referrerId === uid) return;
+  if (!db.users[uid]) db.users[uid] = { id: msg.from.id };
+  // A referral is locked to the first valid referrer and cannot be overwritten later.
+  if (!db.users[uid].referredBy && db.users[referrerId]) {
+    db.users[uid].referredBy = referrerId;
+    db.users[uid].referredAt = new Date().toISOString();
+    await saveDb();
+  }
+}
+
 async function startNewOrder(chatId, uid) {
   try {
     const all = await getServices();
@@ -312,8 +385,11 @@ async function submitDeposit(chatId, uid, amount) {
   return bot.sendMessage(chatId, `💵 Amount: ৳${money(amount)}\n\nএখন আপনার Transaction ID/TrxID পাঠান।\nউদাহরণ: TX123456789`);
 }
 
-bot.onText(/^\/start(?:\s+.*)?$/i, async msg => {
-  await rememberUser(msg); clearState(msg.from.id);
+bot.onText(/^\/start(?:\s+(.+))?$/i, async (msg, match) => {
+  await rememberUser(msg);
+  const arg = String(match?.[1] || '').trim();
+  await processReferralStart(msg, arg);
+  clearState(msg.from.id);
   await bot.sendMessage(msg.chat.id, "👋 স্বাগতম!\n\n🤖 Trusted BAZAAR SMM Bot\n\nনিচের মেনু থেকে অপশন নির্বাচন করুন।", { reply_markup: customerKeyboard(msg.from.id) });
 });
 bot.onText(/^\/admin$/i, async msg => {
@@ -421,6 +497,10 @@ bot.on('message', async msg => {
       if (!orders.length) return await bot.sendMessage(chatId, '📦 My Orders\n\nআপনার কোনো order পাওয়া যায়নি।', { reply_markup: customerKeyboard(uid) });
       const lines = orders.slice(-20).reverse().map(o => `🆔 ${o.id}\n📌 Service: ${o.serviceId}\n🔗 ${o.link}\n🔢 Qty: ${o.quantity}\n💵 Cost: ৳${money(o.cost)}\n📊 Status: ${o.status || 'Pending'}${o.providerOrderId ? `\n🔢 Provider Order: ${o.providerOrderId}` : ''}`);
       return await bot.sendMessage(chatId, `📦 My Orders\n\n${lines.join('\n\n')}`, { reply_markup: customerKeyboard(uid) });
+    }
+    if (action === 'referral') {
+      clearState(uid);
+      return await showReferral(chatId, uid);
     }
 
     const state = getState(uid);
