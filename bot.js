@@ -119,28 +119,28 @@ function rememberUser(msg) {
   return saveDb();
 }
 function normalizeButton(text) {
-  const raw = String(text || "").normalize("NFKC").replace(/\uFE0F/g, "").trim();
-  const clean = raw.replace(/[^\p{L}\p{N}]+/gu, " ").trim().toLowerCase();
+  const raw = String(text || '').normalize('NFKC').replace(/[\uFE0E\uFE0F]/g, '').trim();
+  const clean = raw.replace(/[^\p{L}\p{N}]+/gu, ' ').trim().toLowerCase();
   const aliases = {
-    "📋 services": "services", "services": "services",
-    "💰 balance": "balance", "balance": "balance",
-    "💳 add balance": "add balance", "add balance": "add balance",
-    "🛒 new order": "new order", "new order": "new order",
-    "📦 my orders": "my orders", "my orders": "my orders",
-    "⚙️ admin panel": "admin panel", "admin panel": "admin panel",
-    "📋 manage services": "manage services", "manage services": "manage services",
-    "➕ add service id": "add service id", "add service id": "add service id",
-    "➖ remove service id": "remove service id", "remove service id": "remove service id",
-    "💰 set price": "set price", "set price": "set price",
-    "⬆️ increase price": "increase price", "increase price": "increase price",
-    "⬇️ decrease price": "decrease price", "decrease price": "decrease price",
-    "💳 payment numbers": "payment numbers", "payment numbers": "payment numbers",
-    "✏️ change payment number": "change payment number", "change payment number": "change payment number",
-    "💳 payment requests": "payment requests", "payment requests": "payment requests",
-    "👥 user count": "user count", "user count": "user count",
-    "🔙 customer menu": "customer menu", "customer menu": "customer menu"
+    'services': 'services',
+    'balance': 'balance',
+    'add balance': 'add balance',
+    'new order': 'new order',
+    'my orders': 'my orders',
+    'admin panel': 'admin panel',
+    'manage services': 'manage services',
+    'add service id': 'add service id',
+    'remove service id': 'remove service id',
+    'set price': 'set price',
+    'increase price': 'increase price',
+    'decrease price': 'decrease price',
+    'payment numbers': 'payment numbers',
+    'change payment number': 'change payment number',
+    'payment requests': 'payment requests',
+    'user count': 'user count',
+    'customer menu': 'customer menu'
   };
-  return aliases[raw.toLowerCase()] || aliases[clean] || clean;
+  return aliases[clean] || clean;
 }
 
 function selectedServiceInfo(all, serviceId) {
@@ -302,122 +302,155 @@ bot.on("callback_query", async q => {
   } catch (e) { console.error("Callback error:", e.stack || e.message); }
 });
 
-bot.on("message", async msg => {
+bot.on('message', async msg => {
+  const chatId = msg?.chat?.id;
+  const uid = msg?.from?.id;
   try {
-    if (!msg.text || msg.text.startsWith("/")) return;
-    if (msg.chat.type !== "private") return;
-    const id = msg.chat.id, uid = msg.from.id, text = msg.text, action = normalizeButton(text);
+    if (!chatId || !uid || msg.chat.type !== 'private') return;
+    if (!msg.text || msg.text.startsWith('/')) return;
+
+    const text = String(msg.text).trim();
+    console.log(`[MESSAGE] uid=${uid} text=${JSON.stringify(text)}`);
     await rememberUser(msg);
 
+    // Always allow menu buttons to cancel an unfinished input state.
+    const action = normalizeButton(text);
+
     if (isAdmin(uid)) {
-      const adminResult = await handleAdminAction(id, uid, action);
-      if (adminResult !== undefined) return;
+      const adminActions = new Set([
+        'admin panel','manage services','add service id','remove service id','set price',
+        'increase price','decrease price','payment numbers','change payment number',
+        'payment requests','user count','customer menu'
+      ]);
+      if (adminActions.has(action)) {
+        console.log(`[ADMIN ACTION] uid=${uid} action=${action}`);
+        const result = await handleAdminAction(chatId, uid, action);
+        if (result !== undefined) return;
+      }
     }
 
-    if (action === "services") { clearState(uid); return sendCustomerServices(id); }
-    if (action === "balance") { clearState(uid); return bot.sendMessage(id, `💰 Your Balance\n\n৳${money(getBalance(uid))}`, { reply_markup: customerKeyboard(uid) }); }
-    if (action === "add balance") { clearState(uid); return showAddBalance(id); }
-    if (action === "new order") { clearState(uid); return startNewOrder(id, uid); }
-    if (action === "my orders") {
+    if (action === 'services') {
+      clearState(uid);
+      return await sendCustomerServices(chatId);
+    }
+    if (action === 'balance') {
+      clearState(uid);
+      return await bot.sendMessage(chatId, `💰 Your Balance\n\n৳${money(getBalance(uid))}`, { reply_markup: customerKeyboard(uid) });
+    }
+    if (action === 'add balance') {
+      clearState(uid);
+      return await showAddBalance(chatId);
+    }
+    if (action === 'new order') {
+      clearState(uid);
+      return await startNewOrder(chatId, uid);
+    }
+    if (action === 'my orders') {
       clearState(uid);
       const orders = Object.values(db.orders).filter(o => String(o.userId) === String(uid));
-      if (!orders.length) return bot.sendMessage(id, "📦 My Orders\n\nআপনার কোনো order পাওয়া যায়নি।", { reply_markup: customerKeyboard(uid) });
-      const lines = orders.slice(-20).reverse().map(o => `🆔 ${o.id}\n📌 Service: ${o.serviceId}\n🔗 ${o.link}\n🔢 Qty: ${o.quantity}\n💵 Cost: ৳${money(o.cost)}\n📊 Status: ${o.status || "Pending"}${o.providerOrderId ? `\n🔢 Provider Order: ${o.providerOrderId}` : ""}`);
-      return bot.sendMessage(id, `📦 My Orders\n\n${lines.join("\n\n")}`, { reply_markup: customerKeyboard(uid) });
+      if (!orders.length) return await bot.sendMessage(chatId, '📦 My Orders\n\nআপনার কোনো order পাওয়া যায়নি।', { reply_markup: customerKeyboard(uid) });
+      const lines = orders.slice(-20).reverse().map(o => `🆔 ${o.id}\n📌 Service: ${o.serviceId}\n🔗 ${o.link}\n🔢 Qty: ${o.quantity}\n💵 Cost: ৳${money(o.cost)}\n📊 Status: ${o.status || 'Pending'}${o.providerOrderId ? `\n🔢 Provider Order: ${o.providerOrderId}` : ''}`);
+      return await bot.sendMessage(chatId, `📦 My Orders\n\n${lines.join('\n\n')}`, { reply_markup: customerKeyboard(uid) });
     }
 
     const state = getState(uid);
-    if (state?.type === "deposit_amount") {
-      const amount = Number(text.trim());
-      return submitDeposit(id, uid, amount);
+    console.log(`[STATE] uid=${uid} state=${JSON.stringify(state || null)}`);
+
+    if (state?.type === 'deposit_amount') {
+      return await submitDeposit(chatId, uid, Number(text.replace(/,/g, '')));
     }
-    if (state?.type === "deposit_txid") {
+    if (state?.type === 'deposit_txid') {
       const txId = text.trim();
-      if (txId.length < 3 || txId.length > 100) return bot.sendMessage(id, "⚠️ সঠিক Transaction ID দিন।");
+      if (txId.length < 3 || txId.length > 100) return await bot.sendMessage(chatId, '⚠️ সঠিক Transaction ID দিন।');
       const depId = `DEP-${Date.now()}-${String(uid).slice(-5)}`;
-      db.deposits[depId] = { id: depId, userId: uid, amount: Number(state.amount), paymentNumber: db.paymentNumbers[0], txId, status: "pending", createdAt: new Date().toISOString() };
+      db.deposits[depId] = { id: depId, userId: uid, amount: Number(state.amount), paymentNumber: db.paymentNumbers[0], txId, status: 'pending', createdAt: new Date().toISOString() };
       await saveDb(); clearState(uid);
-      await bot.sendMessage(id, `✅ Payment request পাঠানো হয়েছে।\n🆔 ${depId}\n💵 Amount: ৳${money(state.amount)}\n🔖 TxID: ${txId}\n\nAdmin approve করলে balance যোগ হবে।`, { reply_markup: customerKeyboard(uid) });
-      if (isAdmin(ADMIN_ID)) await bot.sendMessage(ADMIN_ID, `🔔 নতুন payment request এসেছে।\n🆔 ${depId}\n👤 User: ${uid}\n💵 Amount: ৳${money(state.amount)}\n🔖 TxID: ${txId}`, { reply_markup: { inline_keyboard: [[{ text: "✅ Approve", callback_data: `dep_approve:${depId}` }, { text: "❌ Reject", callback_data: `dep_reject:${depId}` }]] } });
+      await bot.sendMessage(chatId, `✅ Payment request পাঠানো হয়েছে।\n🆔 ${depId}\n💵 Amount: ৳${money(state.amount)}\n🔖 TxID: ${txId}\n\nAdmin approve করলে balance যোগ হবে।`, { reply_markup: customerKeyboard(uid) });
+      if (ADMIN_ID) await bot.sendMessage(ADMIN_ID, `🔔 নতুন payment request এসেছে।\n🆔 ${depId}\n👤 User: ${uid}\n💵 Amount: ৳${money(state.amount)}\n🔖 TxID: ${txId}`, { reply_markup: { inline_keyboard: [[{ text: '✅ Approve', callback_data: `dep_approve:${depId}` }, { text: '❌ Reject', callback_data: `dep_reject:${depId}` }]] } });
       return;
     }
 
-    if (state?.type === "order_link") {
-      if (!text.trim()) return bot.sendMessage(id, "⚠️ Link দিন।");
-      setState(uid, { ...state, type: "order_quantity", link: text.trim() });
-      return bot.sendMessage(id, `🔢 Quantity লিখুন।\nMin: ${state.service.min || "-"}\nMax: ${state.service.max || "-"}\n\nউদাহরণ: 1000`);
+    if (state?.type === 'order_link') {
+      if (!text) return await bot.sendMessage(chatId, '⚠️ Link দিন।');
+      setState(uid, { ...state, type: 'order_quantity', link: text });
+      return await bot.sendMessage(chatId, `🔢 Quantity লিখুন।\nMin: ${state.service.min || '-'}\nMax: ${state.service.max || '-'}\n\nউদাহরণ: 1000`);
     }
-    if (state?.type === "order_quantity") {
-      const quantity = Number(text.trim());
+    if (state?.type === 'order_quantity') {
+      const quantity = Number(text.replace(/,/g, ''));
       const min = Number(state.service.min || 0), max = Number(state.service.max || Number.MAX_SAFE_INTEGER);
-      if (!Number.isInteger(quantity) || quantity <= 0 || quantity < min || quantity > max) return bot.sendMessage(id, `⚠️ Quantity সঠিক নয়। Min ${min}, Max ${max}।`);
+      if (!Number.isInteger(quantity) || quantity <= 0 || quantity < min || quantity > max) return await bot.sendMessage(chatId, `⚠️ Quantity সঠিক নয়। Min ${min}, Max ${max}।`);
       const cost = Number(state.service.price) * quantity / 1000;
       if (getBalance(uid) < cost) {
         clearState(uid);
-        return bot.sendMessage(id, `❌ আপনার Balance কম।\nপ্রয়োজন: ৳${money(cost)}\nবর্তমান: ৳${money(getBalance(uid))}\n\nআগে 💳 Add Balance করুন।`, { reply_markup: customerKeyboard(uid) });
+        return await bot.sendMessage(chatId, `❌ আপনার Balance কম।\nপ্রয়োজন: ৳${money(cost)}\nবর্তমান: ৳${money(getBalance(uid))}\n\nআগে 💳 Add Balance করুন।`, { reply_markup: customerKeyboard(uid) });
       }
       const orderId = `ORD-${Date.now()}-${String(uid).slice(-5)}`;
       try {
-        const result = await smm({ action: "add", service: state.serviceId, link: state.link, quantity: String(quantity) });
+        const result = await smm({ action: 'add', service: state.serviceId, link: state.link, quantity: String(quantity) });
         if (result?.error) throw new Error(String(result.error));
-        const providerOrderId = result?.order ? String(result.order) : "";
+        const providerOrderId = result?.order ? String(result.order) : '';
         setBalance(uid, getBalance(uid) - cost);
-        db.orders[orderId] = { id: orderId, userId: uid, serviceId: state.serviceId, link: state.link, quantity, cost, status: "Submitted", providerOrderId, createdAt: new Date().toISOString() };
+        db.orders[orderId] = { id: orderId, userId: uid, serviceId: state.serviceId, link: state.link, quantity, cost, status: 'Submitted', providerOrderId, createdAt: new Date().toISOString() };
         await saveDb(); clearState(uid);
-        return bot.sendMessage(id, `✅ Order submitted successfully!\n\n🆔 ${orderId}\n📌 Service: ${state.serviceId}\n🔢 Quantity: ${quantity}\n💵 Cost: ৳${money(cost)}\n💰 Balance: ৳${money(getBalance(uid))}${providerOrderId ? `\n🔢 Provider Order: ${providerOrderId}` : ""}`, { reply_markup: customerKeyboard(uid) });
+        return await bot.sendMessage(chatId, `✅ Order submitted successfully!\n\n🆔 ${orderId}\n📌 Service: ${state.serviceId}\n🔢 Quantity: ${quantity}\n💵 Cost: ৳${money(cost)}\n💰 Balance: ৳${money(getBalance(uid))}${providerOrderId ? `\n🔢 Provider Order: ${providerOrderId}` : ''}`, { reply_markup: customerKeyboard(uid) });
       } catch (e) {
-        console.error("Provider order error:", e.response?.data || e.message);
-        return bot.sendMessage(id, `❌ Provider order করা যায়নি।\n\n${e.response?.data?.error || e.message}\n\nআপনার Balance কাটা হয়নি।`);
+        console.error('Provider order error:', e.response?.data || e.message);
+        return await bot.sendMessage(chatId, `❌ Provider order করা যায়নি।\n\n${e.response?.data?.error || e.message}\n\nআপনার Balance কাটা হয়নি।`);
       }
     }
 
     if (isAdmin(uid)) {
-      if (state?.type === "add_service") {
+      if (state?.type === 'add_service') {
         const ids = text.split(/[,\s]+/).map(x => x.trim()).filter(Boolean), added = [];
         for (const serviceId of ids) if (/^\d+$/.test(serviceId) && !db.serviceIds.includes(serviceId)) { db.serviceIds.push(serviceId); added.push(serviceId); }
         await saveDb(); clearState(uid);
-        return bot.sendMessage(id, added.length ? `✅ Service ID যোগ হয়েছে:\n${added.join(", ")}` : "⚠️ নতুন কোনো ID যোগ হয়নি।", { reply_markup: adminKeyboard() });
+        return await bot.sendMessage(chatId, added.length ? `✅ Service ID যোগ হয়েছে:\n${added.join(', ')}` : '⚠️ নতুন কোনো ID যোগ হয়নি।', { reply_markup: adminKeyboard() });
       }
-      if (state?.type === "remove_service") {
+      if (state?.type === 'remove_service') {
         const ids = text.split(/[,\s]+/).map(x => x.trim()).filter(Boolean), before = db.serviceIds.length;
         db.serviceIds = db.serviceIds.filter(x => !ids.includes(x)); ids.forEach(x => delete db.prices[x]);
         await saveDb(); clearState(uid);
-        return bot.sendMessage(id, `✅ ${before - db.serviceIds.length}টি Service ID বাদ দেওয়া হয়েছে।`, { reply_markup: adminKeyboard() });
+        return await bot.sendMessage(chatId, `✅ ${before - db.serviceIds.length}টি Service ID বাদ দেওয়া হয়েছে।`, { reply_markup: adminKeyboard() });
       }
-      if (state?.type === "set_price" || state?.type === "increase_price" || state?.type === "decrease_price") {
+      if (state?.type === 'set_price' || state?.type === 'increase_price' || state?.type === 'decrease_price') {
         const m = text.match(/^(\d+)\s+([0-9]+(?:\.[0-9]+)?)$/);
-        if (!m) return bot.sendMessage(id, "ফরম্যাট:\nServiceID Amount\nউদাহরণ: 979 150");
-        const serviceId = m[1]; if (!db.serviceIds.includes(serviceId)) return bot.sendMessage(id, "❌ এই Service ID আপনার তালিকায় নেই।");
+        if (!m) return await bot.sendMessage(chatId, 'ফরম্যাট:\nServiceID Amount\nউদাহরণ: 979 150');
+        const serviceId = m[1];
+        if (!db.serviceIds.includes(serviceId)) return await bot.sendMessage(chatId, '❌ এই Service ID আপনার তালিকায় নেই।');
         const amount = Number(m[2]);
         let base = Number(db.prices[serviceId]);
         if (!Number.isFinite(base)) {
-          try { const all = await getServices(); const s = selectedServiceInfo(all, serviceId); base = Number(s?.providerRate || 0); } catch (_) { base = 0; }
+          try { const all = await getServices(); const ss = selectedServiceInfo(all, serviceId); base = Number(ss?.providerRate || 0); } catch (_) { base = 0; }
         }
-        if (state.type === "set_price") db.prices[serviceId] = amount;
-        else db.prices[serviceId] = state.type === "increase_price" ? base + amount : Math.max(0, base - amount);
+        if (state.type === 'set_price') db.prices[serviceId] = amount;
+        else db.prices[serviceId] = state.type === 'increase_price' ? base + amount : Math.max(0, base - amount);
         await saveDb(); clearState(uid);
-        return bot.sendMessage(id, `✅ Service ${serviceId}-এর নতুন দাম/1K: ৳${money(db.prices[serviceId])}`, { reply_markup: adminKeyboard() });
+        return await bot.sendMessage(chatId, `✅ Service ${serviceId}-এর নতুন দাম/1K: ৳${money(db.prices[serviceId])}`, { reply_markup: adminKeyboard() });
       }
-      if (state?.type === "payment_change") {
-        const number = text.trim(); if (!/^[0-9+\-\s]{8,25}$/.test(number)) return bot.sendMessage(id, "⚠️ সঠিক payment number দিন।");
-        db.paymentNumbers = [number];
-        await saveDb(); clearState(uid); return bot.sendMessage(id, `✅ Payment number পরিবর্তন হয়েছে:\n${number}`, { reply_markup: adminKeyboard() });
+      if (state?.type === 'payment_change') {
+        const number = text.trim();
+        if (!/^[0-9+\-\s]{8,25}$/.test(number)) return await bot.sendMessage(chatId, '⚠️ সঠিক payment number দিন।');
+        db.paymentNumbers = [number]; await saveDb(); clearState(uid);
+        return await bot.sendMessage(chatId, `✅ Payment number পরিবর্তন হয়েছে:\n${number}`, { reply_markup: adminKeyboard() });
       }
-      if (state?.type === "payment_add") {
-        const number = text.trim(); if (!/^[0-9+\-\s]{8,25}$/.test(number)) return bot.sendMessage(id, "⚠️ সঠিক payment number দিন।");
+      if (state?.type === 'payment_add') {
+        const number = text.trim();
+        if (!/^[0-9+\-\s]{8,25}$/.test(number)) return await bot.sendMessage(chatId, '⚠️ সঠিক payment number দিন।');
         if (!db.paymentNumbers.includes(number)) db.paymentNumbers.push(number);
-        await saveDb(); clearState(uid); return bot.sendMessage(id, `✅ Payment number যোগ হয়েছে:\n${number}`, { reply_markup: adminKeyboard() });
+        await saveDb(); clearState(uid);
+        return await bot.sendMessage(chatId, `✅ Payment number যোগ হয়েছে:\n${number}`, { reply_markup: adminKeyboard() });
       }
-      if (state?.type === "payment_remove") {
+      if (state?.type === 'payment_remove') {
         const number = text.trim(); db.paymentNumbers = db.paymentNumbers.filter(x => x !== number);
-        await saveDb(); clearState(uid); return bot.sendMessage(id, "✅ Payment number মুছে দেওয়া হয়েছে।", { reply_markup: adminKeyboard() });
+        await saveDb(); clearState(uid);
+        return await bot.sendMessage(chatId, '✅ Payment number মুছে দেওয়া হয়েছে।', { reply_markup: adminKeyboard() });
       }
     }
 
-    return bot.sendMessage(id, "ℹ️ নিচের মেনু থেকে একটি অপশন নির্বাচন করুন।", { reply_markup: customerKeyboard(uid) });
+    return await bot.sendMessage(chatId, `ℹ️ আমি পেয়েছি: ${text}\n\nনিচের মেনু থেকে একটি অপশন নির্বাচন করুন।`, { reply_markup: customerKeyboard(uid) });
   } catch (e) {
-    console.error("Message handler error:", e.stack || e.message);
-    try { await bot.sendMessage(msg.chat.id, "❌ একটি সমস্যা হয়েছে। আবার চেষ্টা করুন।"); } catch (_) {}
+    console.error('Message handler error:', e.stack || e.message);
+    try { await bot.sendMessage(chatId, `❌ Bot error: ${e.message || 'Unknown error'}\n\nRender Logs দেখুন।`); } catch (_) {}
   }
 });
 
@@ -447,10 +480,13 @@ async function start() {
     server.listen(PORT, "0.0.0.0", async () => {
       console.log(`Listening on 0.0.0.0:${PORT}`);
       if (process.env.RENDER_EXTERNAL_URL) {
-        const base = process.env.RENDER_EXTERNAL_URL.replace(/\/$/, ""), webhookUrl = base + webhookPath;
-        try { await bot.setWebHook(webhookUrl); console.log("Telegram webhook configured:", webhookUrl); }
-        catch (e) { console.error("Webhook setup failed:", e.response?.body || e.message); }
-      } else console.warn("RENDER_EXTERNAL_URL is missing; Telegram webhook was not configured.");
+        const base = process.env.RENDER_EXTERNAL_URL.replace(/\/$/, ''), webhookUrl = base + webhookPath;
+        try {
+          await bot.deleteWebHook();
+          await bot.setWebHook(webhookUrl, { drop_pending_updates: false, allowed_updates: ['message', 'callback_query'] });
+          console.log('Telegram webhook configured:', webhookUrl);
+        } catch (e) { console.error('Webhook setup failed:', e.response?.body || e.message); }
+      } else console.warn('RENDER_EXTERNAL_URL is missing; Telegram webhook was not configured.');
     });
   } catch (e) { console.error("Startup failed:", e.stack || e.message); process.exit(1); }
 }
