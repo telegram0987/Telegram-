@@ -77,12 +77,29 @@ function normalizeDb() {
 
 let saveQueue = Promise.resolve();
 function saveDb() {
-  normalizeDb();
   if (!pool) return Promise.resolve();
-  const snapshot = JSON.parse(JSON.stringify(db));
-  saveQueue = saveQueue.then(async () => {
-    await pool.query(`INSERT INTO bot_settings (id, data, updated_at) VALUES (1, $1::jsonb, NOW()) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`, [JSON.stringify(snapshot)]);
-  }).catch(err => { console.error("Database save error:", err.stack || err.message); throw err; });
+
+  // Queue writes, but take the JSON snapshot only when this write actually
+  // starts. This prevents an older snapshot (for example from rememberUser())
+  // from overwriting a newer price, customer, balance, order, or payment update
+  // that happened while the previous write was still running.
+  const write = async () => {
+    normalizeDb();
+    const snapshot = JSON.parse(JSON.stringify(db));
+    await pool.query(
+      `INSERT INTO bot_settings (id, data, updated_at) VALUES (1, $1::jsonb, NOW())
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW()`,
+      [JSON.stringify(snapshot)]
+    );
+  };
+
+  // A failed write must not permanently poison the queue. Later saves should
+  // still be able to persist the latest in-memory state.
+  const previous = saveQueue.catch(() => {});
+  saveQueue = previous.then(write).catch(err => {
+    console.error("Database save error:", err.stack || err.message);
+    throw err;
+  });
   return saveQueue;
 }
 
