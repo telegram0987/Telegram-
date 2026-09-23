@@ -196,7 +196,8 @@ function customerKeyboard(userId) {
   const rows = [
     [{ text: "📋 Services" }, { text: "💰 Balance" }],
     [{ text: "💳 Add Balance" }, { text: "🛒 New Order" }],
-    [{ text: "📦 My Orders" }, { text: "👥 Referral" }]
+    [{ text: "📦 My Orders" }, { text: "👥 Referral" }],
+    [{ text: "👤 Account Details" }]
   ];
   if (isAdmin(userId)) rows.push([{ text: "⚙️ Admin Panel" }]);
   return { keyboard: rows, resize_keyboard: true, is_persistent: true };
@@ -209,6 +210,7 @@ function adminKeyboard() {
     [{ text: "⬇️ Decrease Price" }, { text: "💳 Payment Numbers" }],
     [{ text: "✏️ Change Payment Number" }, { text: "💳 Payment Requests" }],
     [{ text: "👥 User Count" }],
+    [{ text: "👤 Customer Details" }],
     [{ text: "🔙 Customer Menu" }]
   ], resize_keyboard: true, is_persistent: true };
 }
@@ -251,6 +253,8 @@ function normalizeButton(text) {
     'change payment number': 'change payment number',
     'payment requests': 'payment requests',
     'user count': 'user count',
+    'customer details': 'customer details',
+    'account details': 'account details',
     'customer menu': 'customer menu'
   };
   return aliases[clean] || clean;
@@ -309,6 +313,65 @@ async function showPaymentRequests(chatId) {
   }
 }
 
+function formatUserLabel(user) {
+  const username = user?.username ? `@${user.username}` : (user?.firstName || "No username");
+  return `${username} • ${user?.id || "-"}`.slice(0, 64);
+}
+
+async function showAccountDetails(chatId, uid) {
+  const user = db.users[String(uid)] || { id: uid };
+  const orders = Object.values(db.orders || {}).filter(o => String(o.userId) === String(uid));
+  const totalSpent = orders.reduce((sum, o) => sum + Number(o.cost || 0), 0);
+  const completed = orders.filter(o => String(o.status || '').toLowerCase() === 'completed');
+  const firstSeen = user.createdAt || user.joinedAt || '-';
+  const lastSeen = user.lastSeen || '-';
+  return bot.sendMessage(chatId,
+    `👤 Account Details\n\n🆔 User ID: ${user.id || uid}\n📛 Username: ${user.username ? '@' + user.username : 'নেই'}\n👤 Name: ${user.firstName || 'নেই'}\n💰 Current Balance: ৳${money(getBalance(uid))}\n📦 Total Orders: ${orders.length}\n💵 Total Order Value: ৳${money(totalSpent)}\n✅ Completed Orders: ${completed.length}\n🕒 Last Seen: ${lastSeen}\n🗓️ Joined: ${firstSeen}`,
+    { reply_markup: customerKeyboard(uid) }
+  );
+}
+
+async function showCustomerList(chatId) {
+  const users = Object.values(db.users || {}).filter(u => !isAdmin(u?.id)).sort((a, b) => new Date(b.lastSeen || 0) - new Date(a.lastSeen || 0));
+  if (!users.length) return bot.sendMessage(chatId, '👤 Customer Details\n\nকোনো customer পাওয়া যায়নি।', { reply_markup: adminKeyboard() });
+  const buttons = users.slice(0, 100).map(u => [{ text: formatUserLabel(u), callback_data: `admin_customer:${u.id}` }]);
+  return bot.sendMessage(chatId, `👤 Customer Details\n\nমোট Customer: ${users.length}\nনিচে একজন customer নির্বাচন করুন:`, {
+    reply_markup: { inline_keyboard: [...buttons, [{ text: '🔙 Admin Panel', callback_data: 'admin_panel' }]] }
+  });
+}
+
+async function showCustomerDetails(chatId, customerId) {
+  const user = db.users[String(customerId)];
+  if (!user) return bot.sendMessage(chatId, '⚠️ Customer পাওয়া যায়নি।', { reply_markup: adminKeyboard() });
+  const orders = Object.values(db.orders || {})
+    .filter(o => String(o.userId) === String(customerId))
+    .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+  const totalSpent = orders.reduce((sum, o) => sum + Number(o.cost || 0), 0);
+  const completedSpent = orders.filter(o => String(o.status || '').toLowerCase() === 'completed')
+    .reduce((sum, o) => sum + Number(o.cost || 0), 0);
+  const header = `👤 Customer Details\n\n🆔 User ID: ${user.id || customerId}\n📛 Username: ${user.username ? '@' + user.username : 'নেই'}\n👤 Name: ${user.firstName || 'নেই'}\n💰 Balance: ৳${money(getBalance(customerId))}\n📦 Total Orders: ${orders.length}\n💵 Total Order Value: ৳${money(totalSpent)}\n✅ Completed Value: ৳${money(completedSpent)}\n🕒 Last Seen: ${user.lastSeen || '-'}\n\n📜 Order History (শেষ 30টি)\n`;
+  if (!orders.length) {
+    return bot.sendMessage(chatId, header + '\nকোনো order history নেই।', { reply_markup: { inline_keyboard: [[{ text: '🔙 Customer List', callback_data: 'admin_customers' }], [{ text: '⚙️ Admin Panel', callback_data: 'admin_panel' }]] } });
+  }
+  const lines = orders.slice(0, 30).map((o, i) =>
+    `${i + 1}. 🆔 ${o.id}\n   📌 Service: ${o.serviceName || ('Service ID ' + o.serviceId)}\n   🆔 Service ID: ${o.serviceId}\n   🔢 Qty: ${o.quantity}\n   💵 Cost: ৳${money(o.cost)}\n   📊 Status: ${o.status || 'Pending'}\n   🔢 Provider: ${o.providerOrderId || '-'}\n   🔗 ${o.link || '-'}\n   🕒 ${o.createdAt || '-'}`
+  );
+  let text = header + '\n' + lines.join('\n\n');
+  // Telegram message limit safety: split long customer histories into chunks.
+  const chunks = [];
+  while (text.length > 3800) {
+    let cut = text.lastIndexOf('\n\n', 3800);
+    if (cut < 1000) cut = 3800;
+    chunks.push(text.slice(0, cut));
+    text = text.slice(cut).trimStart();
+  }
+  if (text) chunks.push(text);
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    await bot.sendMessage(chatId, chunks[i], isLast ? { reply_markup: { inline_keyboard: [[{ text: '🔙 Customer List', callback_data: 'admin_customers' }], [{ text: '⚙️ Admin Panel', callback_data: 'admin_panel' }]] } } : undefined);
+  }
+}
+
 async function handleAdminAction(id, uid, action) {
   if (action === "admin panel") { clearState(uid); return bot.sendMessage(id, "⚙️ Admin Panel", { reply_markup: adminKeyboard() }); }
   if (action === "manage services") return manageServices(id);
@@ -321,6 +384,7 @@ async function handleAdminAction(id, uid, action) {
   if (action === "change payment number") { setState(uid, { type: "payment_change" }); return bot.sendMessage(id, "✏️ নতুন payment number দিন。\nএটি বর্তমান payment number list replace করবে。"); }
   if (action === "payment requests") return showPaymentRequests(id);
   if (action === "user count") return bot.sendMessage(id, `👥 Registered users: ${Object.keys(db.users).length}`);
+  if (action === "customer details") { clearState(uid); return showCustomerList(id); }
   if (action === "customer menu") { clearState(uid); return bot.sendMessage(id, "🏠 Customer Menu", { reply_markup: customerKeyboard(uid) }); }
 }
 
@@ -425,6 +489,17 @@ bot.on("callback_query", async q => {
       clearState(uid);
       return bot.sendMessage(chatId, "⚙️ Admin Panel", { reply_markup: adminKeyboard() });
     }
+    if (data === "admin_customers") {
+      if (!isAdmin(uid)) return;
+      clearState(uid);
+      return showCustomerList(chatId);
+    }
+    if (data.startsWith("admin_customer:")) {
+      if (!isAdmin(uid)) return;
+      const customerId = data.split(":")[1];
+      clearState(uid);
+      return showCustomerDetails(chatId, customerId);
+    }
     if (data === "admin_pay_add") {
       if (!isAdmin(uid)) return;
       setState(uid, { type: "payment_add" });
@@ -478,7 +553,7 @@ bot.on('message', async msg => {
       const adminActions = new Set([
         'admin panel','manage services','add service id','remove service id','set price',
         'increase price','decrease price','payment numbers','change payment number',
-        'payment requests','user count','customer menu'
+        'payment requests','user count','customer details','customer menu'
       ]);
       if (adminActions.has(action)) {
         console.log(`[ADMIN ACTION] uid=${uid} action=${action}`);
@@ -494,6 +569,10 @@ bot.on('message', async msg => {
     if (action === 'balance') {
       clearState(uid);
       return await bot.sendMessage(chatId, `💰 Your Balance\n\n৳${money(getBalance(uid))}`, { reply_markup: customerKeyboard(uid) });
+    }
+    if (action === 'account details') {
+      clearState(uid);
+      return await showAccountDetails(chatId, uid);
     }
     if (action === 'add balance') {
       clearState(uid);
@@ -552,7 +631,7 @@ bot.on('message', async msg => {
         if (result?.error) throw new Error(String(result.error));
         const providerOrderId = result?.order ? String(result.order) : '';
         setBalance(uid, getBalance(uid) - cost);
-        db.orders[orderId] = { id: orderId, userId: uid, serviceId: state.serviceId, link: state.link, quantity, cost, status: 'Submitted', providerOrderId, createdAt: new Date().toISOString() };
+        db.orders[orderId] = { id: orderId, userId: uid, serviceId: state.serviceId, serviceName: state.service?.name || `Service ${state.serviceId}`, link: state.link, quantity, cost, status: 'Submitted', providerOrderId, createdAt: new Date().toISOString() };
         await saveDb(); clearState(uid);
 
         // Notify admin immediately after the provider accepts the order.

@@ -20,3 +20,9 @@ The bot loads the saved database before accepting Telegram updates and preserves
 Orders are submitted server-side to the configured SMM API using `SMM_API_KEY`. The customer is not redirected to the provider website.
 
 Do not put BOT_TOKEN or SMM_API_KEY in source code. Keep them in Render Environment Variables.
+
+## Customer account & admin customer history
+- Customer Panel → `👤 Account Details` shows User ID, username, name, current balance, total orders, total order value, completed order count, last seen, and joined time when available.
+- Admin Panel → `👤 Customer Details` lists customers and lets the admin open an individual customer profile.
+- Each customer profile includes order history with Order ID, service name/ID, quantity, cost, status, provider order ID, link, and order time.
+- New orders also save the service name so future admin history is easier to read.
