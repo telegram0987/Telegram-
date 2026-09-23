@@ -87,6 +87,76 @@ async function getServices() {
   return Array.isArray(data) ? data : [];
 }
 
+// Periodically sync provider order status and notify customers when an order completes.
+let statusSyncRunning = false;
+async function syncOrderStatuses() {
+  if (statusSyncRunning || !SMM_API_KEY) return;
+  statusSyncRunning = true;
+  try {
+    const orders = Object.values(db.orders || {}).filter(o =>
+      o && o.providerOrderId && !['Completed', 'Canceled', 'Cancelled', 'Failed', 'Partial'].includes(String(o.status || ''))
+    );
+
+    let changed = false;
+    for (const order of orders.slice(-100)) {
+      try {
+        const data = await smm({ action: 'status', order: String(order.providerOrderId) });
+        const providerStatus = String(data?.status || '').trim();
+        if (!providerStatus) continue;
+
+        const normalized = providerStatus.toLowerCase();
+        const oldStatus = String(order.status || 'Submitted');
+        const statusMap = {
+          'completed': 'Completed',
+          'complete': 'Completed',
+          'partial': 'Partial',
+          'canceled': 'Canceled',
+          'cancelled': 'Canceled',
+          'failed': 'Failed',
+          'in progress': 'In Progress',
+          'processing': 'Processing',
+          'pending': 'Pending',
+          'refunded': 'Refunded'
+        };
+        const newStatus = statusMap[normalized] || providerStatus;
+
+        order.status = newStatus;
+        order.providerStatus = providerStatus;
+        if (data.start_count !== undefined) order.startCount = data.start_count;
+        if (data.remains !== undefined) order.remains = data.remains;
+        if (data.currency !== undefined) order.currency = data.currency;
+        order.lastStatusCheck = new Date().toISOString();
+        changed = true;
+
+        // Notify only once when the provider reports the order as completed.
+        if (newStatus === 'Completed' && !order.completionNotified) {
+          order.completedAt = new Date().toISOString();
+          order.completionNotified = true;
+          const customerText = `🎉 Order Completed!\n\n🆔 Order: ${order.id}\n📌 Service: ${order.serviceId}\n🔢 Quantity: ${order.quantity}\n💵 Cost: ৳${money(order.cost)}\n📊 Status: ✅ Completed${order.providerOrderId ? `\n🔢 Provider Order: ${order.providerOrderId}` : ''}`;
+          try {
+            await bot.sendMessage(String(order.userId), customerText, { reply_markup: customerKeyboard(order.userId) });
+          } catch (notifyErr) {
+            console.error(`Completion notification failed for ${order.id}:`, notifyErr.response?.body || notifyErr.message);
+          }
+
+          if (ADMIN_ID) {
+            try {
+              await bot.sendMessage(ADMIN_ID, `✅ ORDER COMPLETED\n\n🆔 Order: ${order.id}\n👤 User: ${order.userId}\n📌 Service: ${order.serviceId}\n🔢 Quantity: ${order.quantity}\n📊 Status: Completed\n🔢 Provider Order: ${order.providerOrderId}`);
+            } catch (notifyErr) {
+              console.error(`Admin completion notification failed for ${order.id}:`, notifyErr.response?.body || notifyErr.message);
+            }
+          }
+        }
+      } catch (e) {
+        console.error(`Status check failed for provider order ${order.providerOrderId}:`, e.response?.data || e.message);
+      }
+    }
+    if (changed) await saveDb();
+  } finally {
+    statusSyncRunning = false;
+  }
+}
+
 function customerKeyboard(userId) {
   const rows = [
     [{ text: "📋 Services" }, { text: "💰 Balance" }],
@@ -392,9 +462,21 @@ bot.on('message', async msg => {
         setBalance(uid, getBalance(uid) - cost);
         db.orders[orderId] = { id: orderId, userId: uid, serviceId: state.serviceId, link: state.link, quantity, cost, status: 'Submitted', providerOrderId, createdAt: new Date().toISOString() };
         await saveDb(); clearState(uid);
+
+        // Notify admin immediately after the provider accepts the order.
+        if (ADMIN_ID) {
+          const adminText = `🔔 NEW ORDER RECEIVED\n\n🆔 Order: ${orderId}\n👤 User ID: ${uid}\n${db.users[String(uid)]?.username ? `📛 Username: @${db.users[String(uid)].username}\n` : ''}📌 Service ID: ${state.serviceId}\n🔗 Link: ${state.link}\n🔢 Quantity: ${quantity}\n💵 Customer Cost: ৳${money(cost)}\n💰 User Balance: ৳${money(getBalance(uid))}\n📊 Status: Submitted${providerOrderId ? `\n🔢 Provider Order: ${providerOrderId}` : ''}\n🌐 API: ${SMM_API_URL}`;
+          try { await bot.sendMessage(ADMIN_ID, adminText, { reply_markup: { inline_keyboard: [[{ text: '📋 Admin Panel', callback_data: 'admin_panel' }]] } }); }
+          catch (notifyErr) { console.error('Admin order notification failed:', notifyErr.response?.body || notifyErr.message); }
+        }
+
         return await bot.sendMessage(chatId, `✅ Order submitted successfully!\n\n🆔 ${orderId}\n📌 Service: ${state.serviceId}\n🔢 Quantity: ${quantity}\n💵 Cost: ৳${money(cost)}\n💰 Balance: ৳${money(getBalance(uid))}${providerOrderId ? `\n🔢 Provider Order: ${providerOrderId}` : ''}`, { reply_markup: customerKeyboard(uid) });
       } catch (e) {
         console.error('Provider order error:', e.response?.data || e.message);
+        if (ADMIN_ID) {
+          try { await bot.sendMessage(ADMIN_ID, `⚠️ ORDER FAILED\n\n👤 User ID: ${uid}\n📌 Service ID: ${state.serviceId}\n🔗 Link: ${state.link}\n🔢 Quantity: ${quantity}\n💵 Intended Cost: ৳${money(cost)}\n❌ Error: ${e.response?.data?.error || e.message}`); }
+          catch (notifyErr) { console.error('Admin failed-order notification failed:', notifyErr.response?.body || notifyErr.message); }
+        }
         return await bot.sendMessage(chatId, `❌ Provider order করা যায়নি।\n\n${e.response?.data?.error || e.message}\n\nআপনার Balance কাটা হয়নি।`);
       }
     }
@@ -488,6 +570,9 @@ async function start() {
           params: { timeout: 25, allowed_updates: ['message', 'callback_query'] }
         });
         console.log('Telegram long polling started successfully.');
+        // Check provider statuses every 60 seconds so customers see 'Completed' automatically.
+        setInterval(() => { syncOrderStatuses().catch(err => console.error('Order status sync error:', err.message)); }, 60000);
+        setTimeout(() => { syncOrderStatuses().catch(err => console.error('Initial order status sync error:', err.message)); }, 5000);
       } catch (e) {
         console.error('Telegram polling startup failed:', e.response?.body || e.message);
       }
